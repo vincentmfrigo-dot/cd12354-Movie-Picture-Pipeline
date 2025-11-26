@@ -1,96 +1,77 @@
-name: Frontend CD
+name: Frontend CD Pipeline
 
 on:
   push:
-    branches: [ "main" ]
-  workflow_dispatch:
+    branches:
+      - main
+    paths:
+      - 'frontend/**'  # Only trigger when changes occur in the frontend folder
 
 jobs:
-  deploy:
+  test:
     runs-on: ubuntu-latest
-
-    env:
-      AWS_REGION: us-east-1
-      ECR_REGISTRY: 241688915733.dkr.ecr.us-east-1.amazonaws.com
-      ECR_REPO: frontend-app
-      IMAGE_NAME: movie-frontend
-      FRONTEND_DIR: starter/frontend
-
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
 
-      # -------------------------
-      # Node Setup & Dependencies
-      # -------------------------
-      - name: Use Node.js
-        uses: actions/setup-node@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
         with:
-          node-version: "18"
+          node-version: '16'
 
       - name: Install dependencies
-        working-directory: ${{ env.FRONTEND_DIR }}
-        run: npm install
+        run: npm install --prefix frontend
 
-      # -------------------------
-      # Linting
-      # -------------------------
-      - name: Run ESLint
-        working-directory: ${{ env.FRONTEND_DIR }}
-        run: npm run lint
-
-      # -------------------------
-      # Testing
-      # -------------------------
       - name: Run tests
-        working-directory: ${{ env.FRONTEND_DIR }}
-        run: npm test -- --watchAll=false
+        run: npm run test --prefix frontend
 
-      # -------------------------
-      # Build Docker Image
-      # -------------------------
-      - name: Build Docker Image
-        working-directory: ${{ env.FRONTEND_DIR }}
+  build:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Build the Docker image
         run: |
-          docker build \
-            --file ${{ env.FRONTEND_DIR }}/Dockerfile \
-            --build-arg REACT_APP_MOVIE_API_URL=${{ secrets.MOVIE_API_URL }} \
-            -t $IMAGE_NAME:latest \
-            ${{ env.FRONTEND_DIR }}
+          docker build -t frontend:latest -f frontend/Dockerfile frontend
 
-      # -------------------------
-      # AWS Auth + ECR Login
-      # -------------------------
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
+      - name: Tag the Docker image with the Git SHA
+        run: |
+          docker tag frontend:latest <aws_account_id>.dkr.ecr.us-east-1.amazonaws.com/frontend:$GITHUB_SHA
+
+  push_to_ecr:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Login to AWS ECR
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Push Docker image to ECR
+        run: |
+          docker push <aws_account_id>.dkr.ecr.us-east-1.amazonaws.com/frontend:$GITHUB_SHA
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: push_to_ecr
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v2
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
+          version: 'latest'
 
-      - name: Login to Amazon ECR
-        uses: aws-actions/amazon-ecr-login@v2
-
-      # -------------------------
-      # Push Image to ECR
-      # -------------------------
-      - name: Tag & Push image
+      - name: Apply Kubernetes manifests
         run: |
-          FULL_TAG=$ECR_REGISTRY/$ECR_REPO:${{ github.sha }}
-          echo "Pushing image: $FULL_TAG"
-          docker tag $IMAGE_NAME:latest $FULL_TAG
-          docker push $FULL_TAG
-
-      # -------------------------
-      # Deploy to EKS
-      # -------------------------
-      - name: Update kubeconfig
-        run: |
-          aws eks update-kubeconfig \
-            --region $AWS_REGION \
-            --name movie-cluster-v2
-
-      - name: Deploy to cluster
-        run: |
-          kubectl set image deployment/frontend frontend=$ECR_REGISTRY/$ECR_REPO:${{ github.sha }}
+          kubectl set image deployment/frontend frontend=<aws_account_id>.dkr.ecr.us-east-1.amazonaws.com/frontend:$GITHUB_SHA
+          kubectl apply -f k8s/frontend-service.yaml
+          kubectl apply -f k8s/frontend-deployment.yaml
           kubectl rollout status deployment/frontend
