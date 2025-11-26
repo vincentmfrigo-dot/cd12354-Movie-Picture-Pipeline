@@ -1,58 +1,66 @@
-name: Backend CI Pipeline
+name: Backend Continuous Integration
 
 on:
+  workflow_dispatch:
   pull_request:
     branches:
       - main
-    paths:
-      - 'backend/**'  # Only trigger when changes occur in the backend folder
 
 jobs:
-  lint:
+  Linting:
     runs-on: ubuntu-latest
+    environment: Development Environment
+
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
+    - name: Check the Repository
+      uses: actions/checkout@v3
 
-      - name: Set up Python
-        uses: actions/setup-python@v3
-        with:
-          python-version: '3.8'
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: "3.10"
 
-      - name: Install dependencies
-        run: pip install -r backend/requirements.txt
+    - name: Install Dependencies
+      working-directory: starter/backend 
+      run:  |
+        python -m pip install --upgrade pip
+        pip install pipenv
+        pip install flake8
 
-      - name: Run flake8 (Linting)
-        run: flake8 backend/
+    - name: Run Linting
+      run: cd starter/backend && pipenv run lint
 
-  test:
+  Test:
     runs-on: ubuntu-latest
-    needs: lint
+
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
+    - name: Check the Repository
+      uses: actions/checkout@v3
 
-      - name: Set up Python
-        uses: actions/setup-python@v3
-        with:
-          python-version: '3.8'
+    - name: Use Python 3
+      uses: actions/setup-python@v4
+      with:
+        python-version: "3.10"
 
-      - name: Install dependencies
-        run: pip install -r backend/requirements.txt
+    - name: Install Dependencies
+      working-directory: starter/backend 
+      run:  |
+        python -m pip install --upgrade pip
+        pip install pipenv
+        pip install flake8
 
-      - name: Run tests
-        run: pytest backend/
+    - name: Run Tests
+      run: cd starter/backend && pipenv install pytest && pipenv run test
 
-  build:
+  Build:
+    needs: [Linting, Test]
     runs-on: ubuntu-latest
-    needs: [lint, test]
+    
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
+    - name: Check the Repository
+      uses: actions/checkout@v3
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
-
-      - name: Build the Docker image
-        run: |
-          docker build -t backend:latest -f backend/Dockerfile backend
+    - name: Build Docker Image
+      run: |
+        cd starter/backend
+        docker build --tag 241688915733.dkr.ecr.us-east-1.amazonaws.com/backend-app:latest .
