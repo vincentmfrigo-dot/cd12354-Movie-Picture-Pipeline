@@ -1,0 +1,96 @@
+name: Frontend CD
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    env:
+      AWS_REGION: us-east-1
+      ECR_REGISTRY: 241688915733.dkr.ecr.us-east-1.amazonaws.com
+      ECR_REPO: frontend-app
+      IMAGE_NAME: movie-frontend
+      FRONTEND_DIR: starter/frontend
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # -------------------------
+      # Node Setup & Dependencies
+      # -------------------------
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+
+      - name: Install dependencies
+        working-directory: ${{ env.FRONTEND_DIR }}
+        run: npm install
+
+      # -------------------------
+      # Linting
+      # -------------------------
+      - name: Run ESLint
+        working-directory: ${{ env.FRONTEND_DIR }}
+        run: npm run lint
+
+      # -------------------------
+      # Testing
+      # -------------------------
+      - name: Run tests
+        working-directory: ${{ env.FRONTEND_DIR }}
+        run: npm test -- --watchAll=false
+
+      # -------------------------
+      # Build Docker Image
+      # -------------------------
+      - name: Build Docker Image
+        working-directory: ${{ env.FRONTEND_DIR }}
+        run: |
+          docker build \
+            --file ${{ env.FRONTEND_DIR }}/Dockerfile \
+            --build-arg REACT_APP_MOVIE_API_URL=${{ secrets.MOVIE_API_URL }} \
+            -t $IMAGE_NAME:latest \
+            ${{ env.FRONTEND_DIR }}
+
+      # -------------------------
+      # AWS Auth + ECR Login
+      # -------------------------
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # -------------------------
+      # Push Image to ECR
+      # -------------------------
+      - name: Tag & Push image
+        run: |
+          FULL_TAG=$ECR_REGISTRY/$ECR_REPO:${{ github.sha }}
+          echo "Pushing image: $FULL_TAG"
+          docker tag $IMAGE_NAME:latest $FULL_TAG
+          docker push $FULL_TAG
+
+      # -------------------------
+      # Deploy to EKS
+      # -------------------------
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig \
+            --region $AWS_REGION \
+            --name movie-cluster-v2
+
+      - name: Deploy to cluster
+        run: |
+          kubectl set image deployment/frontend frontend=$ECR_REGISTRY/$ECR_REPO:${{ github.sha }}
+          kubectl rollout status deployment/frontend
