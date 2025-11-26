@@ -1,0 +1,106 @@
+name: Backend CD
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    env:
+      AWS_REGION: us-east-1
+      ECR_REGISTRY: 241688915733.dkr.ecr.us-east-1.amazonaws.com
+      ECR_REPO: backend-app
+      IMAGE_NAME: movie-backend
+      CLUSTER_NAME: movie-cluster-v2
+      PYTHON_VERSION: "3.10"  # Python 3.10 for the backend
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ------------------------------
+      # Set up Python 3.10.0
+      # ------------------------------
+      - name: Set up Python 3.10.0
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10.0'  # Explicitly specify the full version
+
+     # ------------------------------
+      # Install Pipenv
+      # ------------------------------
+      - name: Install Pipenv
+        run: |
+          python -m pip install --upgrade pip
+          pip install pipenv
+
+      # ------------------------------
+      # Install dependencies using Pipenv
+      # ------------------------------
+      - name: Install dependencies
+        run: |
+          pipenv install --dev  # Install all dependencies from Pipfile
+
+      # ------------------------------
+      # Linting
+      # ------------------------------
+      - name: Run ESLint
+        working-directory: ${{ env.FRONTEND_DIR }}
+        run: npm run lint
+
+      # ------------------------------
+      # Testing
+      # ------------------------------
+      - name: Run tests
+        working-directory: ${{ env.FRONTEND_DIR }}
+        run: npm test -- --watchAll=false
+
+      # ------------------------------
+      # Build Docker Image
+      # ------------------------------
+      - name: Build Docker Image
+        working-directory: ${{ env.FRONTEND_DIR }}
+        run: |
+          docker build \
+            --build-arg REACT_APP_MOVIE_API_URL=${{ secrets.MOVIE_API_URL }} \
+            -t $IMAGE_NAME:latest .
+
+      # ------------------------------
+      # AWS Auth + ECR Login
+      # ------------------------------
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # ------------------------------
+      # Push Image to ECR
+      # ------------------------------
+      - name: Tag & Push image
+        run: |
+          FULL_TAG=$ECR_REGISTRY/$ECR_REPO:${{ github.sha }}
+          echo "Pushing image: $FULL_TAG"
+          docker tag $IMAGE_NAME:latest $FULL_TAG
+          docker push $FULL_TAG
+
+      # ------------------------------
+      # Deploy to EKS
+      # ------------------------------
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig \
+            --region $AWS_REGION \
+            --name movie-cluster-v2
+
+      - name: Deploy to cluster
+        run: |
+          kubectl set image deployment/frontend frontend=$ECR_REGISTRY/$ECR_REPO:${{ github.sha }}
+          kubectl rollout status deployment/frontend
